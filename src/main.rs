@@ -1,41 +1,54 @@
-pub mod maven;
-pub mod util;
-
-use axum::*;
-use axum::http::StatusCode;
-use axum::routing::{get, post};
-use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::str::FromStr;
+
+use axum::*;
 use axum::extract::Path;
+use axum::http::StatusCode;
+use axum::routing::{get, post};
 use hyper::{Body, Client, Request, Response, Uri};
 use hyper::header::USER_AGENT;
 use hyper_tls::HttpsConnector;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info, instrument, Instrument, span, trace};
+use tracing::Level;
+use tracing_subscriber::filter::Filtered;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::FmtSubscriber;
+use uuid::Uuid;
+
 use crate::maven::{MavenArtifactRef, MavenRepoPolicy, RemoteMavenRepo, Sha1Handling};
+
+pub mod maven;
+pub mod util;
 
 #[tokio::main]
 async fn main() {
-    //TODO tracing_subscriber::fmt::init();
+
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(Level::TRACE)
+        .with_ansi(true)
+        .with_thread_ids(true)
+        .with_thread_names(false)
+        .finish();
+
+    //TODO log level filtering
+
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("setting default subscriber failed");
 
     // build our application with a route
     let app = Router::new()
         // `GET /` goes to `root`
         .route("/", get(root))
         .route("/repo/*path", get(repo))
-        // `POST /users` goes to `create_user`
-        .route("/users", post(create_user));
+        ;
 
     let addr = SocketAddr::from_str("127.0.0.1:3000").unwrap();
-    println!("serving {}", addr);
+    info!("listening on {}", addr);
     Server::bind(&addr)
         .serve(app.into_make_service())
         .await
         .unwrap();
-
-
-    // let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    //
-    // axum::serve(listener, app).await.unwrap();
 }
 
 // basic handler that responds with a static string
@@ -44,8 +57,14 @@ async fn root() -> &'static str {
 }
 
 async fn repo(Path(repo_path): Path<String>) -> Response<Body> {
-    println!("getting from repo: {}", repo_path);
+    let span = span!(Level::TRACE, "repo get", repo_path, correlation_id = Uuid::new_v4().to_string());
 
+    let artifact_ref = span.in_scope(|| {
+        trace!("getting from repo: {}", repo_path);
+        MavenArtifactRef::parse_path(&repo_path).unwrap()
+    });
+
+    //TODO reuse repo
     let repo = RemoteMavenRepo::new(
         "https://repo1.maven.org/maven2".to_string(),
         MavenRepoPolicy {
@@ -53,7 +72,8 @@ async fn repo(Path(repo_path): Path<String>) -> Response<Body> {
         }
     ).unwrap();
 
-    let data = repo.get(MavenArtifactRef::parse_path(&repo_path).unwrap())
+    let data = repo.get(artifact_ref)
+        .instrument(span)
         .await
         .unwrap();
 
@@ -61,33 +81,4 @@ async fn repo(Path(repo_path): Path<String>) -> Response<Body> {
     Response::builder()
         .body(response_body)
         .unwrap()
-}
-
-async fn create_user(
-    // this argument tells axum to parse the request body
-    // as JSON into a `CreateUser` type
-    Json(payload): Json<CreateUser>,
-) -> (StatusCode, Json<User>) {
-    // insert your application logic here
-    let user = User {
-        id: 1337,
-        username: payload.username,
-    };
-
-    // this will be converted into a JSON response
-    // with a status code of `201 Created`
-    (StatusCode::CREATED, Json(user))
-}
-
-// the input to our `create_user` handler
-#[derive(Deserialize)]
-struct CreateUser {
-    username: String,
-}
-
-// the output to our `create_user` handler
-#[derive(Serialize)]
-struct User {
-    id: u64,
-    username: String,
 }

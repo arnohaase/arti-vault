@@ -9,6 +9,7 @@ use pin_project_lite::pin_project;
 use sha1::{Digest, Sha1};
 use sha1::digest::consts::U20;
 use sha1::digest::generic_array::GenericArray;
+use tracing::trace;
 
 /// This struct wraps an HTTP body, allowing it to be consumed asynchronously without materializing
 ///  it but at the same time performing validation that requires knowledge of the entire body's
@@ -112,6 +113,7 @@ impl HttpBodyValidator for Sha1HttpBodyValidator {
 
     fn do_validate(&self) -> bool {
         let hash = self.hasher.clone().finalize();
+        trace!("validating SHA1 hash");
         hash == self.expected_hash
     }
 }

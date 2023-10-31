@@ -10,6 +10,7 @@ use hyper::body::to_bytes;
 use hyper::client::HttpConnector;
 use hyper::header::USER_AGENT;
 use hyper_tls::HttpsConnector;
+use tracing::trace;
 use crate::util::validated_http_body::{NopHttpBodyValidator, Sha1HttpBodyValidator, ValidatedHttpBody};
 
 pub enum Sha1Handling {
@@ -35,6 +36,7 @@ pub struct MavenCoordinates {
     pub group_id: String,
     pub artifact_id: String,
     pub version: MavenVersion,
+    //TODO classifier
 }
 
 pub struct MavenArtifactRef {
@@ -46,7 +48,7 @@ impl MavenArtifactRef {
     ///  "org/..." or "com/..."
     /// The second part of the returned pair is the filename
     pub fn parse_path(path: &str) -> anyhow::Result<MavenArtifactRef> { //TODO unit test
-        println!("parsing path {:?}", path);
+        trace!("parsing path {:?}", path);
 
         if let Some(last_slash) = path.rfind('/') {
             let (without_filename, file_name) = path.split_at(last_slash);
@@ -114,7 +116,7 @@ impl RemoteMavenRepo {
             .header(USER_AGENT, "curl/7.68.0" ) //TODO Maven Central returns a 403 without a user agent - which one to use?
             .body(Body::empty())?;
 
-        println!("getting {:?}", request);
+        trace!("getting {:?}", request);
 
         let artifact_response = self.client.request(request)
             .await?;
