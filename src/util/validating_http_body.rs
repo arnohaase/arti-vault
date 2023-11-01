@@ -21,15 +21,15 @@ pin_project! {
     pub struct ValidatingHttpBody {
         #[pin]
         http_body: Body,
-        validator: Box<dyn HttpBodyValidator>,
+        validators: Vec<Box<dyn HttpBodyValidator>>,
         is_failed: bool,
     }
 }
 impl ValidatingHttpBody {
-    pub fn new(http_body: Body, validator: impl HttpBodyValidator + 'static) -> ValidatingHttpBody {
+    pub fn new(http_body: Body, validators: Vec<Box<dyn HttpBodyValidator>>) -> ValidatingHttpBody {
         ValidatingHttpBody {
             http_body,
-            validator: Box::new(validator),
+            validators,
             is_failed: false,
         }
     }
@@ -50,12 +50,14 @@ impl Stream for ValidatingHttpBody {
         match inner {
             Some(Ok(data)) => {
                 // available data from the wrapped HTTP body -> pass this on
-                this.validator.add_data(&data);
+                for v in this.validators {
+                    v.add_data(&data);
+                }
                 Poll::Ready(Some(Ok(data)))
             }
             None => {
                 // wrapped HTTP body is fully drained -> finalize validation
-                if this.validator.do_validate() {
+                if this.validators.iter().all(|v| v.do_validate()) {
                     Poll::Ready(None)
                 }
                 else {

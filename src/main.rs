@@ -3,20 +3,14 @@ use std::str::FromStr;
 
 use axum::*;
 use axum::extract::Path;
-use axum::http::StatusCode;
-use axum::routing::{get, post};
-use hyper::{Body, Client, Request, Response, Uri};
-use hyper::header::USER_AGENT;
-use hyper_tls::HttpsConnector;
-use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument, Instrument, span, trace};
+use axum::routing::get;
+use hyper::{Body, Response};
+use tracing::{info, Instrument, span, trace};
 use tracing::Level;
-use tracing_subscriber::filter::Filtered;
-use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::FmtSubscriber;
 use uuid::Uuid;
 
-use crate::maven::{MavenArtifactRef, MavenRepoPolicy, RemoteMavenRepo, Sha1Handling};
+use crate::maven::{MavenArtifactRef, RemoteMavenRepo};
 
 pub mod maven;
 pub mod util;
@@ -67,9 +61,6 @@ async fn repo(Path(repo_path): Path<String>) -> Response<Body> {
     //TODO reuse repo
     let repo = RemoteMavenRepo::new(
         "https://repo1.maven.org/maven2".to_string(),
-        MavenRepoPolicy {
-            sha1_handling: Sha1Handling::VerifyIfPresent,
-        }
     ).unwrap();
 
     let data = repo.get(artifact_ref)

@@ -1,16 +1,13 @@
-use axum::http::header::ToStrError;
 use bytes::Bytes;
 use futures_core::Stream;
 use hex::FromHex;
-use hyper::{Body, Client, Request, Response, Uri};
-use hyper::body::to_bytes;
+use hyper::{Body, Client, Request, Uri};
 use hyper::client::HttpConnector;
 use hyper::header::USER_AGENT;
 use hyper_tls::HttpsConnector;
 use tracing::trace;
 
-use crate::maven::Sha1Handling;
-use crate::util::validating_http_body::{Md5HttpBodyValidator, NopHttpBodyValidator, Sha1HttpBodyValidator, ValidatingHttpBody};
+use crate::util::validating_http_body::{HttpBodyValidator, Md5HttpBodyValidator, Sha1HttpBodyValidator, ValidatingHttpBody};
 
 /// Downloads files relative to a fixed base URI, checking the body's integrity against a hashcode
 ///  if one is returned in a header.
@@ -63,17 +60,15 @@ impl ValidatingHttpDownloader {
             .map(|h| h.to_str().unwrap_or(""))
             ;
 
-        Ok(match (sha1_string, md5_string) {
-            (Some(sha1), _) => {
-                let expected_hash = <[u8;20]>::from_hex(sha1)?; //TODO how to handle invalid content in an sha1 tag? Reject? Fall-through to other hashes?
-                ValidatingHttpBody::new(artifact_response.into_body(), Sha1HttpBodyValidator::new(expected_hash))
-            },
-            (None, Some(md5)) => {
-                let expected_hash = <[u8;16]>::from_hex(md5)?; //TODO how to handle invalid content in an sha1 tag? Reject? Fall-through to other hashes?
-                ValidatingHttpBody::new(artifact_response.into_body(), Md5HttpBodyValidator::new(expected_hash))
-            },
-            (None, None) =>
-                ValidatingHttpBody::new(artifact_response.into_body(), NopHttpBodyValidator{}),
-        })
+        let mut validators: Vec<Box<dyn HttpBodyValidator>> = vec![];
+        if let Some(sha1) = sha1_string {
+            let expected_hash = <[u8;20]>::from_hex(sha1)?; //TODO how to handle invalid content in an sha1 tag? Reject? Fall-through to other hashes?
+            validators.push(Box::new( Sha1HttpBodyValidator::new(expected_hash)));
+        }
+        if let Some(md5) = md5_string {
+            let expected_hash = <[u8;16]>::from_hex(md5)?; //TODO how to handle invalid content in an sha1 tag? Reject? Fall-through to other hashes?
+            validators.push(Box::new(Md5HttpBodyValidator::new(expected_hash)));
+        }
+        Ok(ValidatingHttpBody::new(artifact_response.into_body(), validators))
     }
 }
