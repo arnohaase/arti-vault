@@ -1,6 +1,5 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_core::{ready, Stream};
@@ -19,25 +18,25 @@ use tracing::trace;
 ///  validation fails. Once a stream chunk with an error was returned, this stream will stop
 ///  polling from upstream and always return an error
 pin_project! {
-    pub struct ValidatedHttpBody {
+    pub struct ValidatingHttpBody {
         #[pin]
         http_body: Body,
         validator: Box<dyn HttpBodyValidator>,
         is_failed: bool,
     }
 }
-impl ValidatedHttpBody {
-    pub fn new(http_body: Body, validator: impl HttpBodyValidator + 'static) -> ValidatedHttpBody {
-        ValidatedHttpBody {
+impl ValidatingHttpBody {
+    pub fn new(http_body: Body, validator: impl HttpBodyValidator + 'static) -> ValidatingHttpBody {
+        ValidatingHttpBody {
             http_body,
             validator: Box::new(validator),
             is_failed: false,
         }
     }
 }
-unsafe impl Send for ValidatedHttpBody {}
+unsafe impl Send for ValidatingHttpBody {}
 
-impl Stream for ValidatedHttpBody {
+impl Stream for ValidatingHttpBody {
     type Item = anyhow::Result<Bytes>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -114,6 +113,32 @@ impl HttpBodyValidator for Sha1HttpBodyValidator {
     fn do_validate(&self) -> bool {
         let hash = self.hasher.clone().finalize();
         trace!("validating SHA1 hash");
+        hash == self.expected_hash
+    }
+}
+
+pub struct Md5HttpBodyValidator {
+    context: md5::Context,
+    expected_hash: [u8; 16],
+}
+impl Md5HttpBodyValidator {
+    pub fn new(expected_hash: [u8; 16]) -> Md5HttpBodyValidator {
+        Md5HttpBodyValidator {
+            context: md5::Context::new(),
+            expected_hash,
+        }
+    }
+}
+impl HttpBodyValidator for Md5HttpBodyValidator {
+    fn add_data(&mut self, data: &Bytes) {
+        self.context.consume(data);
+    }
+
+    fn do_validate(&self) -> bool {
+        let hash: [u8;16] = self.context.clone()
+            .compute()
+            .into();
+        trace!("validating MD5 hash");
         hash == self.expected_hash
     }
 }

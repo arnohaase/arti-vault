@@ -11,7 +11,7 @@ use hyper::client::HttpConnector;
 use hyper::header::USER_AGENT;
 use hyper_tls::HttpsConnector;
 use tracing::trace;
-use crate::util::validated_http_body::{NopHttpBodyValidator, Sha1HttpBodyValidator, ValidatedHttpBody};
+use crate::util::validating_http_body::{NopHttpBodyValidator, Sha1HttpBodyValidator, ValidatingHttpBody};
 
 pub enum Sha1Handling {
     Require,
@@ -121,9 +121,11 @@ impl RemoteMavenRepo {
         let artifact_response = self.client.request(request)
             .await?;
 
-        // artifact_response.headers()
-        //     .iter()
-        //     .for_each(|h| println!("  header: {:?}", h));
+        artifact_response.headers()
+            .iter()
+            .for_each(|h| println!("  header: {:?}", h));
+
+        // println!("!!! etag {:?}", artifact_response.headers().get("etAg"));
 
         if !artifact_response.status().is_success() {
             return Err(anyhow::Error::msg(format!("upstream request failed: {}", artifact_response.status())));
@@ -133,7 +135,7 @@ impl RemoteMavenRepo {
             Sha1Handling::Require => true,
             Sha1Handling::VerifyIfPresent => false,
             Sha1Handling::Ignore => {
-                return Ok(ValidatedHttpBody::new(artifact_response.into_body(), NopHttpBodyValidator{}));
+                return Ok(ValidatingHttpBody::new(artifact_response.into_body(), NopHttpBodyValidator{}));
             }
         };
 
@@ -150,14 +152,14 @@ impl RemoteMavenRepo {
 
         match Self::extract_expected_sha1(sha1_response).await {
             Ok(expected_hash) => {
-                Ok(ValidatedHttpBody::new(artifact_response.into_body(), Sha1HttpBodyValidator::new(expected_hash)))
+                Ok(ValidatingHttpBody::new(artifact_response.into_body(), Sha1HttpBodyValidator::new(expected_hash)))
             }
             Err(e)  => {
                 if fail_without_sha1 {
                     Err(e) //TODO logging
                 }
                 else {
-                    Ok(ValidatedHttpBody::new(artifact_response.into_body(), NopHttpBodyValidator{})) //TODO logging
+                    Ok(ValidatingHttpBody::new(artifact_response.into_body(), NopHttpBodyValidator{})) //TODO logging
                 }
             }
         }
