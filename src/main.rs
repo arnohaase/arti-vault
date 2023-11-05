@@ -10,7 +10,8 @@ use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use uuid::Uuid;
 
-use crate::maven::{MavenArtifactRef, RemoteMavenRepo};
+use crate::maven::coordinates::MavenArtifactRef;
+use crate::maven::remote_repo::RemoteMavenRepo;
 
 pub mod maven;
 pub mod util;
