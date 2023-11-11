@@ -1,15 +1,18 @@
+use std::fmt::Debug;
 use std::path::PathBuf;
+use std::time::Duration;
 
+use async_recursion::async_recursion;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use tokio::fs::{create_dir_all, OpenOptions, read_dir, remove_dir, remove_file, rename, try_exists};
+use tokio::fs::{create_dir_all, metadata, OpenOptions, read_dir, remove_dir, remove_dir_all, remove_file, rename, try_exists};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::io::ReaderStream;
-use tracing::{error, trace};
+use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
 
 use crate::blob::blob_storage::{BlobStorage, RetrievedBlob};
@@ -21,10 +24,134 @@ struct BlobMetaData {
 }
 
 
+#[async_trait]
+pub trait IsReferencedChecker: Send + Sync + Debug {
+    async fn is_referenced(&self, key: &Uuid) -> anyhow::Result<bool>;
+}
+
+
+#[derive(Debug)]
 pub struct FsBlobStorage {
     root: PathBuf,
 }
 impl FsBlobStorage {
+
+    /// Check for (and optionally repair) orphaned data left by interrupted / crashed operations.
+    ///  'grace_period' is the minimum duration after which temporary temporary data is assumed
+    ///       to be orphaned.
+    ///  'log_only' determines whether the operation actually repairs (i.e. typically deletes)
+    ///       data structures it considers orphaned, or just logs them
+    #[tracing::instrument]
+    pub async fn fsck(&self, grace_period: &Duration, log_only: bool, is_referenced_checker: &impl IsReferencedChecker) -> anyhow::Result<()> {
+        Self::fsck_rec(0, &self.root, grace_period, log_only, is_referenced_checker).await?;
+        Ok(())
+    }
+
+    #[async_recursion]
+    async fn fsck_rec(level: usize, directory: &PathBuf, grace_period: &Duration, log_only: bool, is_referenced_checker: &impl IsReferencedChecker) -> anyhow::Result<bool> {
+        trace!("fsck'ing directory {}", directory.display());
+
+        if level > 7 {
+            warn!("more nested directories than expected in fsck - skipping {}", directory.display());
+            return Ok(true); // assume non-empty to be on the safe side
+        }
+
+        let mut non_empty = false;
+        let mut entries = read_dir(directory).await?;
+        loop {
+            if let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+
+                let mut this_entry_remains = true;
+
+                if path.is_dir() {
+                    // completely ignore all folders that don't have an expired grace period -
+                    //  they may have initialization 'in flight'
+
+                    let expired_grace_period = Self::has_expired_grace_period(&path, grace_period).await;
+
+                    if expired_grace_period && Self::is_temp_folder(&path) {
+                        if log_only {
+                            warn!("fsck found orphaned temp folder - skipping because of 'log_only' mode: {}", path.display());
+                        }
+                        else {
+                            warn!("fsck found orphaned temp folder - deleting: {}", path.display());
+                            remove_dir_all(&path).await?;
+                            this_entry_remains = false;
+                        }
+                    }
+                    else {
+                        if let Some(file_name) = path.file_name() {
+                            if let Some(file_name) = file_name.to_str() {
+                                if let Ok(uuid) = Uuid::parse_str(file_name) {
+                                    if expired_grace_period && !is_referenced_checker.is_referenced(&uuid).await? {
+                                        if log_only {
+                                            warn!("fsck found orphaned blob - skipping because of 'log_only' mode: {}", path.display());
+                                        }
+                                        else {
+                                            warn!("fsck found orphaned blob - deleting: {}", path.display());
+                                            remove_dir_all(&path).await?;
+                                            this_entry_remains = false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if this_entry_remains {
+                        let has_content = Self::fsck_rec(level+1, &path, grace_period, log_only, is_referenced_checker).await?;
+                        if !has_content {
+                            debug!("fsck: removing empty folder {}", path.display());
+                            remove_dir(&path).await?;
+                            this_entry_remains = false;
+                        }
+                    }
+
+                    non_empty = non_empty || this_entry_remains;
+                }
+                else {
+                    non_empty = true;
+                }
+            }
+            else {
+                break;
+            }
+        }
+
+        Ok(non_empty)
+    }
+
+    fn is_temp_folder(path: &PathBuf) -> bool { //TODO unit test
+        if let Some(file_name) = path.file_name() {
+            if let Some(file_name) = file_name.to_str() {
+                return file_name.ends_with(".inserting") || file_name.ends_with(".deleting");
+            }
+        }
+        false
+    }
+
+    async fn has_expired_grace_period(path: &PathBuf, grace_period: &Duration) -> bool {
+        let created = match metadata(&path).await {
+            Ok(metadata) => {
+                metadata.created().expect("file system should support file creation timestamp")
+            }
+            Err(e) => {
+                warn!("error determining file metadata: {}", e);
+                return false;
+            }
+        };
+
+        match created.elapsed() {
+            Ok(duration) => {
+                &duration > grace_period
+            }
+            Err(_) => {
+                return false;
+            }
+        }
+    }
+
     fn directory_path_for_key(&self, key: &Uuid) -> PathBuf { //TODO unit test
         let mut result = self.root.clone();
 
@@ -176,7 +303,7 @@ impl BlobStorage<Uuid> for FsBlobStorage {
             // First, atomically rename the directory by adding ".deleting" as a suffix so that
             //  partial deletes do not leave inconsistent state.
             //
-            // NB: This "deleting" directory can not exist due to a previous attempt at deleting
+            // NB: This ".deleting" directory can not exist due to a previous attempt at deleting
             //  because there UUIDs are unique
             //
             // NB: This is racy with concurrent reads and can cause spurious failure in them
@@ -189,15 +316,12 @@ impl BlobStorage<Uuid> for FsBlobStorage {
 
             let mut files = read_dir(&temp_path).await?;
             loop {
-                match files.next_entry().await? {
-                    Some(dir_entry) => {
-                        // If there is an entry that is not a file, or that is not removable, this
-                        //  returns an error.
-                        remove_file(&dir_entry.path()).await?;
-                    }
-                    None => {
-                        break;
-                    }
+                if let Some(dir_entry) = files.next_entry().await? {
+                    // Return an error if there is an entry that is not a file, or that is not removable
+                    remove_file(&dir_entry.path()).await?;
+                }
+                else {
+                    break;
                 }
             }
 
