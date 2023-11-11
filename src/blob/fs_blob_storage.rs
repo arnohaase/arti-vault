@@ -4,13 +4,22 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use futures_core::Stream;
+use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 use tokio::fs::{create_dir_all, OpenOptions, read_dir, remove_dir, remove_file, rename, try_exists};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::io::ReaderStream;
 use tracing::{error, trace};
 use uuid::Uuid;
 
-use crate::blob::blob_storage::BlobStorage;
+use crate::blob::blob_storage::{BlobStorage, RetrievedBlob};
+
+#[derive(Serialize, Deserialize)]
+struct BlobMetaData {
+    sha1: [u8;20],
+    md5: [u8;16],
+}
+
 
 pub struct FsBlobStorage {
     root: PathBuf,
@@ -39,7 +48,7 @@ impl FsBlobStorage {
         //TODO trace
         //TODO performance / monitoring
 
-        let mut data_path = directory_path;
+        let mut data_path = directory_path.clone();
         data_path.push("data");
 
         let mut file = OpenOptions::new()
@@ -48,15 +57,39 @@ impl FsBlobStorage {
             .open(&data_path)
             .await?;
 
+        let mut sha1_hasher: Sha1 = Default::default();
+        let mut md5_hasher = md5::Context::new();
+
         loop {
             match data.next().await {
                 Some(bytes) => {
+                    sha1_hasher.update(&bytes);
+                    md5_hasher.consume(&bytes);
                     file.write(&bytes).await?;
                 }
                 None =>
                     break,
             }
         }
+
+        let metadata = BlobMetaData {
+            sha1: sha1_hasher.finalize().into(),
+            md5: md5_hasher.compute().into(),
+        };
+
+        let metadata_json = serde_json::to_string(&metadata)?;
+
+        let mut metadata_file = directory_path;
+        metadata_file.push("metadata.json");
+
+        let mut metadata_file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .append(true)
+            .open(metadata_file)
+            .await?;
+        metadata_file.write_all(metadata_json.as_bytes())
+            .await?;
 
         Ok(data_path)
     }
@@ -65,10 +98,7 @@ impl FsBlobStorage {
 
 #[async_trait]
 impl BlobStorage<Uuid> for FsBlobStorage {
-    //TODO metadata - inserted, last updated, last read (access statistics in general)
-    // SHA1, MD5
-    // 'completed' -> to mark this as actually referenced from the outside (?)
-    // 'fsck'
+    //TODO 'fsck'
 
     async fn insert(&self, data: impl Stream<Item=Bytes> + Send) -> anyhow::Result<Uuid> {
         //TODO performance / monitoring
@@ -101,11 +131,11 @@ impl BlobStorage<Uuid> for FsBlobStorage {
         result
     }
 
-    async fn get(&self, key: &Uuid) -> anyhow::Result<Option<Box<dyn Stream<Item=std::io::Result<Bytes>>>>> {
+    async fn get(&self, key: &Uuid) -> anyhow::Result<Option<RetrievedBlob>> {
         let directory_path = self.directory_path_for_key(key);
         trace!("getting file system blob {} from directory {}", key.as_hyphenated(), directory_path.display());
 
-        let mut data_path = directory_path;
+        let mut data_path = directory_path.clone();
         data_path.push("data");
 
         if !try_exists(&data_path).await? {
@@ -118,7 +148,25 @@ impl BlobStorage<Uuid> for FsBlobStorage {
             .await?;
 
         let stream = ReaderStream::new(file);
-        Ok(Some(Box::new(stream)))
+
+        let mut metadata_path = directory_path;
+        metadata_path.push("metadata.json");
+        let mut metadata_file = OpenOptions::new()
+            .read(true)
+            .open(metadata_path)
+            .await?;
+
+        let mut metadata_json = String::new();
+        metadata_file.read_to_string(&mut metadata_json)
+            .await?;
+
+        let metadata: BlobMetaData = serde_json::from_str(&&metadata_json)?;
+
+        Ok(Some(RetrievedBlob {
+            data: Box::new(stream),
+            md5: metadata.md5,
+            sha1: metadata.sha1,
+        }))
     }
 
     async fn delete(&self, key: &Uuid) -> anyhow::Result<bool> {
