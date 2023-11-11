@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::maven::coordinates::MavenArtifactRef;
 use crate::maven::remote_repo::RemoteMavenRepo;
 
+pub mod blob;
 pub mod maven;
 pub mod util;
 
