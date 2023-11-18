@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::blob::transient_blob_storage::TransientBlobStorage;
 
 use crate::maven::paths::parse_maven_path;
-use crate::maven::remote_repo::RemoteMavenRepo;
+use crate::maven::remote_repo::{DummyRemoteRepoMetadataStore, RemoteMavenRepo};
 
 pub mod blob;
 pub mod maven;
@@ -55,6 +55,7 @@ async fn root() -> &'static str {
 }
 
 async fn repo(Path(repo_path): Path<String>) -> Response<Body> {
+// async fn repo(Path(repo_path): Path<String>) -> Response<Body> {
     let span = span!(Level::TRACE, "repo get", repo_path, correlation_id = Uuid::new_v4().to_string());
 
     let artifact_ref = span.in_scope(|| {
@@ -67,9 +68,10 @@ async fn repo(Path(repo_path): Path<String>) -> Response<Body> {
     let repo = RemoteMavenRepo::new(
         "https://repo1.maven.org/maven2".to_string(),
         Arc::new(TransientBlobStorage::new()),
+        Arc::new(DummyRemoteRepoMetadataStore {}),
     ).unwrap();
 
-    let data = repo.get(artifact_ref)
+    let data = repo.get_artifact(&artifact_ref)
         .instrument(span)
         .await
         .unwrap();
