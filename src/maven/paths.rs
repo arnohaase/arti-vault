@@ -93,8 +93,6 @@ fn parse_maven_filename<'a>(file_name: &'a str, artifact_id: &str, version_strin
             None
         }
         else {
-            println!("{:?}", file_name);
-
             if file_name.starts_with('-') {
                 Some(&file_name[1..])
             }
@@ -137,10 +135,9 @@ fn parse_classifier_and_timestamp<'a> (file_name: &'a str, full_file_name: &str)
 ///  "org/..." or "com/..."
 /// The second part of the returned pair is the filename
 pub fn parse_maven_path(path: &str) -> anyhow::Result<MavenArtifactRef> {
-    //TODO unit test
-
     if let Some(last_slash) = path.rfind('/') {
         let (without_filename, file_name) = path.split_at(last_slash);
+        let file_name = &file_name[1..];
 
         if let Some(last_slash) = without_filename.rfind('/') {
             let (without_version, version) = without_filename.split_at(last_slash);
@@ -194,7 +191,7 @@ fn maven_file_name(artifact_ref: &MavenArtifactRef) -> String {
                 Some(n) => format!("-{}", n),
             };
 
-            format!("{}-{}-SNAPSHOT{}-{}{}{}",
+            format!("{}-{}{}-{}{}{}",
                     artifact_ref.coordinates.artifact_id.0,
                     version,
                     classifier_string,
@@ -205,8 +202,6 @@ fn maven_file_name(artifact_ref: &MavenArtifactRef) -> String {
         }
     }
 }
-
-
 
 #[derive(Debug, Eq, PartialEq)]
 struct ParseFilenameResult<'a> {
@@ -219,7 +214,6 @@ struct ParseFilenameResult<'a> {
 mod test {
     use rstest::*;
     use super::*;
-    use crate::maven::coordinates::*;
 
     #[rstest]
     #[case::release("a-1.0.0.jar", "a", "1.0.0", Some(ParseFilenameResult{ version: MavenVersion::Release("1.0.0".to_string()), classifier: None, extension: ".jar"} ))]
@@ -258,14 +252,48 @@ mod test {
 
     #[case::snapshot_lowercase_snapshot("a-1.0.0-snapshot-12345678.123456-a.jar", "a", "1.0.0-snapshot", Some(ParseFilenameResult{ version: MavenVersion::Release("1.0.0-snapshot".to_string()), classifier: Some("12345678.123456-a"), extension: ".jar"}))]
     fn test_parse_filename(#[case] file_name: &str, #[case] artifact_id: &str, #[case] version_string: &str, #[case] expected: Option<ParseFilenameResult>) {
-        let actual = parse_maven_filename(file_name, artifact_id, version_string);
+        // This is a comprehensive test for parsing and formatting logic. It takes a single set of input data and
+        //  hands it to the different formatting and parsing functions, ensuring consistent behavior
 
-        if let Some(expected) = expected {
-            let actual = actual.unwrap();
+        // Start with file name parsing
+
+        let actual_filename_result = parse_maven_filename(file_name, artifact_id, version_string);
+
+        let unwrapped_expected_result = if let Some(expected) = expected {
+            let actual = actual_filename_result.unwrap();
             assert_eq!(actual, expected);
+            expected
         }
         else {
-            assert!(actual.is_err());
-        }
+            assert!(actual_filename_result.is_err());
+
+            // This is an error case for file name parsing - no point and no way to hand it over to other functions
+            return;
+        };
+
+        // next, we generate the full path and check that that is parsed consistently
+
+        let full_path = format!("some/group/{}/{}/{}", artifact_id, version_string, file_name);
+        let parsed_artifact_ref = parse_maven_path(&full_path)
+            .expect("file name parsing succeeded, so this path should be parsable");
+
+        let expected_artifact_ref = MavenArtifactRef {
+            coordinates: MavenCoordinates {
+                group_id: MavenGroupId("some.group".to_string()),
+                artifact_id: MavenArtifactId(artifact_id.to_string()),
+                version: unwrapped_expected_result.version.clone(),
+            },
+            classifier: match unwrapped_expected_result.classifier {
+                Some(s) => MavenClassifier::Classified(s.to_string()),
+                None => MavenClassifier::Unclassified,
+            },
+            file_extension: unwrapped_expected_result.extension.to_string(),
+        };
+
+        assert_eq!(parsed_artifact_ref, expected_artifact_ref);
+
+        // verify that the path is formatted the same way it was parsed
+
+        assert_eq!(full_path, as_maven_path(&parsed_artifact_ref));
     }
 }

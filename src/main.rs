@@ -12,7 +12,6 @@ use tracing_subscriber::FmtSubscriber;
 use uuid::Uuid;
 use crate::blob::transient_blob_storage::TransientBlobStorage;
 
-use crate::maven::coordinates::MavenArtifactRef;
 use crate::maven::paths::parse_maven_path;
 use crate::maven::remote_repo::RemoteMavenRepo;
 
