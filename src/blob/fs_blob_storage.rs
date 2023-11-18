@@ -222,11 +222,11 @@ impl FsBlobStorage {
     }
 }
 
+//TODO PathBuf.is_dir() etc. -> metadata -> async; leave sym links alone
+
 
 #[async_trait]
 impl BlobStorage<Uuid> for FsBlobStorage {
-    //TODO 'fsck'
-
     async fn insert(&self, data: impl Stream<Item=Bytes> + Send) -> anyhow::Result<Uuid> {
         //TODO performance / monitoring
         let key = Uuid::new_v4();

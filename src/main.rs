@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use axum::*;
 use axum::extract::Path;
@@ -9,8 +10,10 @@ use tracing::{info, Instrument, span, trace};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use uuid::Uuid;
+use crate::blob::transient_blob_storage::TransientBlobStorage;
 
 use crate::maven::coordinates::MavenArtifactRef;
+use crate::maven::paths::parse_maven_path;
 use crate::maven::remote_repo::RemoteMavenRepo;
 
 pub mod blob;
@@ -57,12 +60,14 @@ async fn repo(Path(repo_path): Path<String>) -> Response<Body> {
 
     let artifact_ref = span.in_scope(|| {
         trace!("getting from repo: {}", repo_path);
-        MavenArtifactRef::parse_path(&repo_path).unwrap()
+        parse_maven_path(&repo_path).unwrap()
     });
 
     //TODO reuse repo
+
     let repo = RemoteMavenRepo::new(
         "https://repo1.maven.org/maven2".to_string(),
+        Arc::new(TransientBlobStorage::new()),
     ).unwrap();
 
     let data = repo.get(artifact_ref)
