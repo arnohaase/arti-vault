@@ -65,10 +65,10 @@ impl BlobStorage<Uuid> for TransientBlobStorage {
         if let Some((data, md5, sha1)) = lock.get(key) {
             let data: Vec<u8> = data.clone();
             let bytes = Bytes::from(data);
-            let stream = futures::stream::once(async move { Ok::<_, std::io::Error>(bytes) });
+            let stream = futures::stream::once(async move { Ok::<_, anyhow::Error>(bytes) });
 
             Ok(Some(RetrievedBlob {
-                data: Box::new(stream),
+                data: Box::pin(stream),
                 md5: md5.clone(),
                 sha1: sha1.clone(),
             }))

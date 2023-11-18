@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_recursion::async_recursion;
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -274,7 +274,8 @@ impl BlobStorage<Uuid> for FsBlobStorage {
             .open(data_path)
             .await?;
 
-        let stream = ReaderStream::new(file);
+        let stream = ReaderStream::new(file)
+            .map_err(|e| e.into());
 
         let mut metadata_path = directory_path;
         metadata_path.push("metadata.json");
@@ -290,7 +291,7 @@ impl BlobStorage<Uuid> for FsBlobStorage {
         let metadata: BlobMetaData = serde_json::from_str(&&metadata_json)?;
 
         Ok(Some(RetrievedBlob {
-            data: Box::new(stream),
+            data: Box::pin(stream),
             md5: metadata.md5,
             sha1: metadata.sha1,
         }))

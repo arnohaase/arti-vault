@@ -1,12 +1,13 @@
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::pin::Pin;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_core::Stream;
 
 pub struct RetrievedBlob {
-    pub data: Box<dyn Stream<Item = std::io::Result<Bytes>>>,
+    pub data: Pin<Box<dyn Stream<Item = anyhow::Result<Bytes>> + Send + 'static>>,
     pub md5: [u8;16],
     pub sha1: [u8;20],
 }
