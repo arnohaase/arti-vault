@@ -1,8 +1,8 @@
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+
 use anyhow::anyhow;
 use async_trait::async_trait;
-
 use bytes::Bytes;
 use futures_core::Stream;
 use hyper::Uri;
@@ -20,7 +20,7 @@ pub struct RemoteMavenRepo<S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> {
 }
 
 impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
-    pub fn new(base_uri: String, blob_storage: Arc<S>, metadata_store: Arc<M>) -> anyhow::Result<RemoteMavenRepo<S, M>> {
+    pub fn new(base_uri: String, blob_storage: Arc<S>, metadata_store: M) -> anyhow::Result<RemoteMavenRepo<S, M>> {
         let mut base_uri = base_uri;
         if !base_uri.ends_with('/') {
             base_uri.push('/');
@@ -29,12 +29,10 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
         // check that the base URI is valid
         Uri::try_from(base_uri.clone())?;
 
-        let temp: Arc<dyn RemoteRepoMetadataStore> = Arc::new(DummyRemoteRepoMetadataStore {});
-
         Ok(RemoteMavenRepo {
             downloader: ValidatingHttpDownloader::new(base_uri)?,
             blob_storage,
-            metadata_store,
+            metadata_store: Arc::new(metadata_store),
         })
     }
 
@@ -43,7 +41,13 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
 
     //TODO introduce 'stream with checksum' struct
     pub async fn get_artifact(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<Pin<Box<dyn Stream <Item = anyhow::Result<Bytes>> + Send + 'static>>> {
-        match self.metadata_store.decide_get_artifact(artifact_ref).await? {
+        let asdf = self.metadata_store
+            .decide_get_artifact(artifact_ref).await?;
+
+        // let asdf = GetArtifactDecision::Download;
+
+        match asdf
+        {
             GetArtifactDecision::Local(id) => {
                 match self.blob_storage.get(&id).await? {
                     Some(blob) => {
@@ -56,6 +60,17 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
                 }
             },
             GetArtifactDecision::Download => {
+                match self.downloader.get(&as_maven_path(&artifact_ref)).await {
+                    Ok(s) => {
+
+                    }
+                    Err(e) => {
+                        // self.metadata_store
+
+
+                    }
+                }
+
                 //TODO store locally for caching
                 //TODO remember failure
 
@@ -76,7 +91,7 @@ pub enum GetArtifactDecision {
 }
 
 #[async_trait]
-pub trait RemoteRepoMetadataStore {
+pub trait RemoteRepoMetadataStore: Send + Sync {
     async fn decide_get_artifact(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<GetArtifactDecision>;
 
 }

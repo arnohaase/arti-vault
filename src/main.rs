@@ -1,11 +1,18 @@
+use std::collections::HashMap;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::*;
-use axum::extract::Path;
+use axum::extract::{Path, State};
+use axum::handler::Handler;
+use axum::http::Request;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use hyper::{Body, Response};
+use tokio::sync::RwLock;
 use tracing::{info, Instrument, span, trace};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
@@ -31,14 +38,28 @@ async fn main() {
 
     //TODO log level filtering
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("setting default subscriber failed");
+    // tracing::subscriber::set_global_default(subscriber)
+    //     .expect("setting default subscriber failed");
+    //
+    //
+    // fn asdf(h: impl Handler<Arc<AppData>, Arc<AppData>>) {}
+
 
     // build our application with a route
     let app = Router::new()
+        // .with_state(AppData{})
         // `GET /` goes to `root`
         .route("/", get(root))
         .route("/repo/*path", get(repo))
+        .with_state(Arc::new(AppData{
+            repo: RemoteMavenRepo::new(
+                "https://repo1.maven.org/maven2".to_string(),
+                Arc::new(TransientBlobStorage::new()),
+                DummyRemoteRepoMetadataStore {},
+            ).unwrap(),
+        }))
+        //TODO HTTP trace layer
+
         ;
 
     let addr = SocketAddr::from_str("127.0.0.1:3000").unwrap();
@@ -49,13 +70,20 @@ async fn main() {
         .unwrap();
 }
 
-// basic handler that responds with a static string
-async fn root() -> &'static str {
-    "Hello, World!"
+struct AppData {
+    repo: RemoteMavenRepo<TransientBlobStorage, DummyRemoteRepoMetadataStore>,
 }
 
-async fn repo(Path(repo_path): Path<String>) -> Response<Body> {
-// async fn repo(Path(repo_path): Path<String>) -> Response<Body> {
+unsafe impl Send for AppData {}
+unsafe impl Sync for AppData {}
+
+
+// basic handler that responds with a static string
+async fn root() -> &'static str {
+    "Hello, World!" //TODO
+}
+
+async fn repo(State(state): State<Arc<AppData>>, Path(repo_path): Path<String>, ) -> Response<Body> {
     let span = span!(Level::TRACE, "repo get", repo_path, correlation_id = Uuid::new_v4().to_string());
 
     let artifact_ref = span.in_scope(|| {
@@ -63,21 +91,20 @@ async fn repo(Path(repo_path): Path<String>) -> Response<Body> {
         parse_maven_path(&repo_path).unwrap()
     });
 
-    //TODO reuse repo
-
-    let repo = RemoteMavenRepo::new(
-        "https://repo1.maven.org/maven2".to_string(),
-        Arc::new(TransientBlobStorage::new()),
-        Arc::new(DummyRemoteRepoMetadataStore {}),
-    ).unwrap();
-
-    let data = repo.get_artifact(&artifact_ref)
+    let data = state.repo.get_artifact(&artifact_ref)
         .instrument(span)
         .await
-        .unwrap();
+    //     .unwrap()
+    ;
+    //
+    // let response_body = Body::wrap_stream(data);
+    // Response::builder()
+    //     .body(response_body)
+    //     .unwrap()
 
-    let response_body = Body::wrap_stream(data);
-    Response::builder()
-        .body(response_body)
-        .unwrap()
+    todo!()
+
+
 }
+
+
