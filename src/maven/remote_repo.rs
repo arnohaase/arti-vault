@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -107,12 +108,14 @@ pub trait RemoteRepoMetadataStore: Send + Sync {
 
 pub struct DummyRemoteRepoMetadataStore {
     local_artifacts: RwLock<HashMap<MavenArtifactRef, Uuid>>,
+    failed_downloads: RwLock<HashMap<MavenArtifactRef, Instant>>
 }
 
 impl DummyRemoteRepoMetadataStore {
     pub fn new() -> DummyRemoteRepoMetadataStore {
         DummyRemoteRepoMetadataStore {
             local_artifacts: Default::default(),
+            failed_downloads: Default::default(),
         }
     }
 }
@@ -120,23 +123,34 @@ impl DummyRemoteRepoMetadataStore {
 #[async_trait]
 impl RemoteRepoMetadataStore for DummyRemoteRepoMetadataStore {
     async fn decide_get_artifact(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<GetArtifactDecision> {
-        //TODO
-        Ok(GetArtifactDecision::Download)
+        if let Some(key) = self.local_artifacts.read().unwrap().get(artifact_ref) {
+            Ok(GetArtifactDecision::Local(key.clone()))
+        }
+        else if let Some(download_failure) = self.failed_downloads.read().unwrap().get(artifact_ref) {
+            let now = Instant::now();
+
+            // configurable retry interval
+            if 300 < now.checked_duration_since(download_failure.clone()).unwrap_or(Duration::from_secs(0)).as_secs() {
+                self.failed_downloads.write().unwrap().remove(artifact_ref);
+                Ok(GetArtifactDecision::Download)
+            }
+            else {
+                Ok(GetArtifactDecision::Fail)
+            }
+        }
+        else {
+            Ok(GetArtifactDecision::Download)
+        }
     }
 
     async fn register_artifact(&self, artifact_ref: &MavenArtifactRef, blob_key: &Uuid) -> anyhow::Result<()> {
-        // let mut asdf = self.local_artifacts.write().unwrap();
-        //
-        // asdf.insert(artifact_ref.clone(), blob_key.clone()); //TODO return if already exists
-        //
-
-        //TODO
+        //TODO clean up if the artifact was previously registered
+        self.local_artifacts.write().unwrap().insert(artifact_ref.clone(), blob_key.clone());
         Ok(())
     }
 
     async fn register_failed_download(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<()> {
-
-        //TODO
+        self.failed_downloads.write().unwrap().insert(artifact_ref.clone(), Instant::now());
         Ok(())
     }
 }
