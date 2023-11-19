@@ -1,24 +1,21 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::*;
 use axum::extract::{Path, State};
 use axum::handler::Handler;
-use axum::http::Request;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use hyper::{Body, Response};
-use tokio::sync::RwLock;
 use tracing::{info, Instrument, span, trace};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use uuid::Uuid;
-use crate::blob::transient_blob_storage::TransientBlobStorage;
+use hex::ToHex;
 
+use crate::blob::transient_blob_storage::TransientBlobStorage;
 use crate::maven::paths::parse_maven_path;
 use crate::maven::remote_repo::{DummyRemoteRepoMetadataStore, RemoteMavenRepo};
 
@@ -91,20 +88,21 @@ async fn repo(State(state): State<Arc<AppData>>, Path(repo_path): Path<String>, 
         parse_maven_path(&repo_path).unwrap()
     });
 
-    let data = state.repo.get_artifact(&artifact_ref)
+    let blob = state.repo.get_artifact(&artifact_ref)
         .instrument(span)
         .await
-    //     .unwrap()
-    ;
-    //
-    // let response_body = Body::wrap_stream(data);
-    // Response::builder()
-    //     .body(response_body)
-    //     .unwrap()
+        .unwrap();
 
-    todo!()
-
-
+    let response_body = Body::wrap_stream(blob.data);
+    let mut response_builder = Response::builder();
+    if let Some(sha1) = blob.sha1 {
+        response_builder = response_builder.header("x-checksum-sha1", sha1.encode_hex::<String>());
+    }
+    if let Some(md5) = blob.md5 {
+        response_builder = response_builder.header("x-checksum-md5", md5.encode_hex::<String>());
+    }
+    response_builder.body(response_body)
+        .unwrap()
 }
 
 

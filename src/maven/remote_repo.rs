@@ -1,18 +1,16 @@
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use bytes::Bytes;
-use futures_core::Stream;
 use hyper::Uri;
 use uuid::Uuid;
 
 use crate::blob::blob_storage::BlobStorage;
 use crate::maven::coordinates::MavenArtifactRef;
 use crate::maven::paths::as_maven_path;
+use crate::util::blob::Blob;
 use crate::util::validating_http_downloader::ValidatingHttpDownloader;
 
 pub struct RemoteMavenRepo<S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> {
@@ -42,7 +40,7 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
     //TODO get SHA1 / MD5
 
     //TODO introduce 'stream with checksum' struct
-    pub async fn get_artifact(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<Pin<Box<dyn Stream <Item = anyhow::Result<Bytes>> + Send + 'static>>> {
+    pub async fn get_artifact(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<Blob> {
 
         match self.metadata_store
             .decide_get_artifact(artifact_ref).await?
@@ -50,7 +48,7 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
             GetArtifactDecision::Local(id) => {
                 match self.blob_storage.get(&id).await? {
                     Some(blob) => {
-                        Ok(blob.data)
+                        Ok(blob)
                     }
                     None => {
                         //TODO repair local metadata - the blob is referenced but does not exist
@@ -69,7 +67,7 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
                             .await?
                         {
                             None => Err(anyhow!("TODO stored but not found")),
-                            Some(s) => Ok(s.data),
+                            Some(s) => Ok(s),
                         }
                     }
                     Err(e) => {
