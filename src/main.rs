@@ -71,9 +71,6 @@ struct AppData {
     repo: RemoteMavenRepo<TransientBlobStorage, DummyRemoteRepoMetadataStore>,
 }
 
-unsafe impl Send for AppData {}
-unsafe impl Sync for AppData {}
-
 
 // basic handler that responds with a static string
 async fn root() -> &'static str {
