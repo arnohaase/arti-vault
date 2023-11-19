@@ -15,7 +15,8 @@ use tokio_util::io::ReaderStream;
 use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
 
-use crate::blob::blob_storage::{BlobStorage, RetrievedBlob};
+use crate::blob::blob_storage::BlobStorage;
+use crate::util::blob::Blob;
 
 #[derive(Serialize, Deserialize)]
 struct BlobMetaData {
@@ -259,7 +260,7 @@ impl BlobStorage<Uuid> for FsBlobStorage {
         result
     }
 
-    async fn get(&self, key: &Uuid) -> anyhow::Result<Option<RetrievedBlob>> {
+    async fn get(&self, key: &Uuid) -> anyhow::Result<Option<Blob>> {
         let directory_path = self.directory_path_for_key(key);
         trace!("getting file system blob {} from directory {}", key.as_hyphenated(), directory_path.display());
 
@@ -291,10 +292,10 @@ impl BlobStorage<Uuid> for FsBlobStorage {
 
         let metadata: BlobMetaData = serde_json::from_str(&&metadata_json)?;
 
-        Ok(Some(RetrievedBlob {
+        Ok(Some(Blob {
             data: Box::pin(stream),
-            md5: metadata.md5,
-            sha1: metadata.sha1,
+            md5: Some(metadata.md5),
+            sha1: Some(metadata.sha1),
         }))
     }
 

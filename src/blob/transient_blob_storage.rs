@@ -8,7 +8,8 @@ use futures_core::Stream;
 use sha1::{Digest, Sha1};
 use uuid::Uuid;
 
-use crate::blob::blob_storage::{BlobStorage, RetrievedBlob};
+use crate::blob::blob_storage::BlobStorage;
+use crate::util::blob::Blob;
 
 /// in-memory blob storage, neither optimized nor particularly robust - for testing purposes
 pub struct TransientBlobStorage {
@@ -60,7 +61,7 @@ impl BlobStorage<Uuid> for TransientBlobStorage {
         Ok(key)
     }
 
-    async fn get(&self, key: &Uuid) -> anyhow::Result<Option<RetrievedBlob>> {
+    async fn get(&self, key: &Uuid) -> anyhow::Result<Option<Blob>> {
         let lock = self.data.lock().unwrap();
 
         if let Some((data, md5, sha1)) = lock.get(key) {
@@ -68,10 +69,10 @@ impl BlobStorage<Uuid> for TransientBlobStorage {
             let bytes = Bytes::from(data);
             let stream = futures::stream::once(async move { Ok::<_, anyhow::Error>(bytes) });
 
-            Ok(Some(RetrievedBlob {
+            Ok(Some(Blob {
                 data: Box::pin(stream),
-                md5: md5.clone(),
-                sha1: sha1.clone(),
+                md5: Some(md5.clone()),
+                sha1: Some(sha1.clone()),
             }))
         }
         else {

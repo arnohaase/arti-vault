@@ -10,7 +10,7 @@ use futures_core::Stream;
 use hyper::Uri;
 use uuid::Uuid;
 
-use crate::blob::blob_storage::{BlobStorage, RetrievedBlob};
+use crate::blob::blob_storage::BlobStorage;
 use crate::maven::coordinates::MavenArtifactRef;
 use crate::maven::paths::as_maven_path;
 use crate::util::validating_http_downloader::ValidatingHttpDownloader;
@@ -61,7 +61,7 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
             GetArtifactDecision::Download => {
                 match self.downloader.get(&as_maven_path(&artifact_ref)).await {
                     Ok(stream) => {
-                        let key = self.blob_storage.insert(stream)
+                        let key = self.blob_storage.insert(stream.data)
                             .await?;
                         self.metadata_store.register_artifact(artifact_ref, &key)
                             .await?;
