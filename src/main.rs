@@ -55,7 +55,7 @@ async fn main() {
             repo: RemoteMavenRepo::new(
                 "https://repo1.maven.org/maven2".to_string(),
                 Arc::new(TransientBlobStorage::new()),
-                DummyRemoteRepoMetadataStore {},
+                DummyRemoteRepoMetadataStore::new(),
             ).unwrap(),
         }))
         //TODO HTTP trace layer

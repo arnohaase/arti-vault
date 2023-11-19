@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
@@ -8,7 +9,7 @@ use futures_core::Stream;
 use hyper::Uri;
 use uuid::Uuid;
 
-use crate::blob::blob_storage::BlobStorage;
+use crate::blob::blob_storage::{BlobStorage, RetrievedBlob};
 use crate::maven::coordinates::MavenArtifactRef;
 use crate::maven::paths::as_maven_path;
 use crate::util::validating_http_downloader::ValidatingHttpDownloader;
@@ -41,12 +42,9 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
 
     //TODO introduce 'stream with checksum' struct
     pub async fn get_artifact(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<Pin<Box<dyn Stream <Item = anyhow::Result<Bytes>> + Send + 'static>>> {
-        let asdf = self.metadata_store
-            .decide_get_artifact(artifact_ref).await?;
 
-        // let asdf = GetArtifactDecision::Download;
-
-        match asdf
+        match self.metadata_store
+            .decide_get_artifact(artifact_ref).await?
         {
             GetArtifactDecision::Local(id) => {
                 match self.blob_storage.get(&id).await? {
@@ -61,23 +59,29 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
             },
             GetArtifactDecision::Download => {
                 match self.downloader.get(&as_maven_path(&artifact_ref)).await {
-                    Ok(s) => {
-
+                    Ok(stream) => {
+                        let key = self.blob_storage.insert(stream)
+                            .await?;
+                        self.metadata_store.register_artifact(artifact_ref, &key)
+                            .await?;
+                        match self.blob_storage.get(&key)
+                            .await?
+                        {
+                            None => Err(anyhow!("TODO stored but not found")),
+                            Some(s) => Ok(s.data),
+                        }
                     }
                     Err(e) => {
-                        // self.metadata_store
-
-
+                        let _ = self.metadata_store.register_failed_download(artifact_ref)
+                            .await;
+                        Err(anyhow!("falied to download"))
                     }
                 }
-
-                //TODO store locally for caching
-                //TODO remember failure
-
-                Ok(Box::pin(self.downloader.get(&as_maven_path(&artifact_ref)).await?))
             }
             GetArtifactDecision::Fail => {
-                Err(anyhow!("TODO failed to download")) //TODO
+                //TODO distinguish 404 from general network failure - per-artifact retry interval vs. general 'circuit breaker'
+                //  -> integrate that logic in the downloader?
+                Err(anyhow!("TODO skipping due to a previous failure to download"))
             }
         }
     }
@@ -94,9 +98,23 @@ pub enum GetArtifactDecision {
 pub trait RemoteRepoMetadataStore: Send + Sync {
     async fn decide_get_artifact(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<GetArtifactDecision>;
 
+    async fn register_artifact(&self, artifact_ref: &MavenArtifactRef, blob_key: &Uuid) -> anyhow::Result<()>;
+
+    async fn register_failed_download(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<()>;
 }
 
+
+
 pub struct DummyRemoteRepoMetadataStore {
+    local_artifacts: RwLock<HashMap<MavenArtifactRef, Uuid>>,
+}
+
+impl DummyRemoteRepoMetadataStore {
+    pub fn new() -> DummyRemoteRepoMetadataStore {
+        DummyRemoteRepoMetadataStore {
+            local_artifacts: Default::default(),
+        }
+    }
 }
 
 #[async_trait]
@@ -104,5 +122,21 @@ impl RemoteRepoMetadataStore for DummyRemoteRepoMetadataStore {
     async fn decide_get_artifact(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<GetArtifactDecision> {
         //TODO
         Ok(GetArtifactDecision::Download)
+    }
+
+    async fn register_artifact(&self, artifact_ref: &MavenArtifactRef, blob_key: &Uuid) -> anyhow::Result<()> {
+        // let mut asdf = self.local_artifacts.write().unwrap();
+        //
+        // asdf.insert(artifact_ref.clone(), blob_key.clone()); //TODO return if already exists
+        //
+
+        //TODO
+        Ok(())
+    }
+
+    async fn register_failed_download(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<()> {
+
+        //TODO
+        Ok(())
     }
 }

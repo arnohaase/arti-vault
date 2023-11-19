@@ -168,7 +168,7 @@ impl FsBlobStorage {
 
     async fn do_insert(
         directory_path: PathBuf,
-        data: impl Stream<Item=Bytes> + Send
+        data: impl Stream<Item=anyhow::Result<Bytes>> + Send
     ) -> anyhow::Result<PathBuf> {
         let mut data = Box::pin(data);
 
@@ -190,6 +190,7 @@ impl FsBlobStorage {
         loop {
             match data.next().await {
                 Some(bytes) => {
+                    let bytes = bytes?;
                     sha1_hasher.update(&bytes);
                     md5_hasher.consume(&bytes);
                     file.write(&bytes).await?;
@@ -227,7 +228,7 @@ impl FsBlobStorage {
 
 #[async_trait]
 impl BlobStorage<Uuid> for FsBlobStorage {
-    async fn insert(&self, data: impl Stream<Item=Bytes> + Send) -> anyhow::Result<Uuid> {
+    async fn insert(&self, data: impl Stream<Item=anyhow::Result<Bytes>> + Send) -> anyhow::Result<Uuid> {
         //TODO performance / monitoring
         let key = Uuid::new_v4();
         let directory_path = self.directory_path_for_key(&key);

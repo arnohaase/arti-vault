@@ -24,7 +24,7 @@ impl TransientBlobStorage {
 
 #[async_trait]
 impl BlobStorage<Uuid> for TransientBlobStorage {
-    async fn insert(&self, data: impl Stream<Item=Bytes> + Send) -> anyhow::Result<Uuid> {
+    async fn insert(&self, data: impl Stream<Item=anyhow::Result<Bytes>> + Send) -> anyhow::Result<Uuid> {
         let mut data = Box::pin(data);
 
         let key = Uuid::new_v4();
@@ -36,6 +36,7 @@ impl BlobStorage<Uuid> for TransientBlobStorage {
         loop {
             match data.next().await {
                 Some(bytes) => {
+                    let bytes = bytes?;
                     sha1_hasher.update(&bytes);
                     md5_hasher.consume(&bytes);
                     data_vec.extend_from_slice(&bytes);

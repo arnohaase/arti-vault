@@ -15,7 +15,7 @@ pub struct RetrievedBlob {
 #[async_trait]
 pub trait BlobStorage<Key: Clone + Debug + Eq + PartialEq + Hash>: Send + Sync {
     /// The key for looking up blobs
-    async fn insert(&self, data: impl Stream<Item=Bytes> + Send)-> anyhow::Result<Key>;
+    async fn insert(&self, data: impl Stream<Item=anyhow::Result<Bytes>> + Send)-> anyhow::Result<Key>;
 
     async fn get(&self, key: &Key, ) -> anyhow::Result<Option<RetrievedBlob>>;
 
