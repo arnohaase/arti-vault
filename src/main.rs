@@ -1,12 +1,9 @@
-use std::future::Future;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::*;
 use axum::extract::{Path, State};
-use axum::handler::Handler;
-use axum::response::IntoResponse;
 use axum::routing::get;
 use hyper::{Body, Response};
 use tracing::{info, Instrument, span, trace};

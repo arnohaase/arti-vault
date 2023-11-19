@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -8,7 +9,7 @@ use hyper::Uri;
 use uuid::Uuid;
 
 use crate::blob::blob_storage::BlobStorage;
-use crate::maven::coordinates::MavenArtifactRef;
+use crate::maven::coordinates::{MavenArtifactId, MavenArtifactRef, MavenGroupId};
 use crate::maven::paths::as_maven_path;
 use crate::util::blob::Blob;
 use crate::util::validating_http_downloader::ValidatingHttpDownloader;
@@ -36,12 +37,10 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
         })
     }
 
-    //TODO get metadata
-    //TODO get SHA1 / MD5
 
-    //TODO introduce 'stream with checksum' struct
+    //TODO distinguish between 'not found' and 'error'?
+
     pub async fn get_artifact(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<Blob> {
-
         match self.metadata_store
             .decide_get_artifact(artifact_ref).await?
         {
@@ -70,10 +69,10 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
                             Some(s) => Ok(s),
                         }
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         let _ = self.metadata_store.register_failed_download(artifact_ref)
                             .await;
-                        Err(anyhow!("falied to download"))
+                        Err(anyhow!("failed to download"))
                     }
                 }
             }
@@ -84,6 +83,59 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
             }
         }
     }
+
+    pub async fn get_artifact_md5(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<[u8;16]> {
+        // delegating to 'get_artifact' ensures that the artifact is downloaded if possible (it
+        //  will likely be queried next after the checksum is queried), and it does not incur
+        //  big overhead since the artifact's data is only fetched as a Stream, i.e. lazily
+        Ok(self.get_artifact(artifact_ref)
+            .await?
+            .md5
+            .expect("locally stored artifacts have their md5 checksum stored"))
+    }
+
+    pub async fn get_artifact_sha1(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<[u8;20]> {
+        // delegating to 'get_artifact' ensures that the artifact is downloaded if possible (it
+        //  will likely be queried next after the checksum is queried), and it does not incur
+        //  big overhead since the artifact's data is only fetched as a Stream, i.e. lazily
+        Ok(self.get_artifact(artifact_ref)
+            .await?
+            .sha1
+            .expect("locally stored artifacts have their md5 checksum stored"))
+    }
+
+    pub async fn register_plugin(&self, group_id: MavenGroupId, plugin_metadata: MavenPluginMetadata) -> anyhow::Result<()> {
+        self.metadata_store.register_plugin(group_id, plugin_metadata).await
+    }
+
+    pub async fn unregister_plugin(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<()> {
+        self.metadata_store.unregister_plugin(group_id, artifact_id).await
+    }
+
+    pub async fn get_group_metadata(&self, group_id: &MavenGroupId) -> anyhow::Result<MavenGroupMetadata> {
+        Ok(MavenGroupMetadata {
+            plugins: self.metadata_store.get_plugins(group_id).await?
+        })
+    }
+
+    //TODO get_artifact_metadata()
+    //TODO get_version_metadata()
+}
+
+// https://maven.apache.org/ref/3.9.5/maven-repository-metadata/repository-metadata.html
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct MavenGroupMetadata {
+    pub plugins: Vec<MavenPluginMetadata>,
+}
+
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct MavenPluginMetadata {
+    /// 'Display name for the plugin'
+    pub name: String,
+    /// 'The plugin invocation prefix (i.e. eclipse for eclipse:...)'
+    pub prefix: String,
+    /// 'The plugin artifactId'
+    pub artifact_id: MavenArtifactId,
 }
 
 
@@ -100,13 +152,18 @@ pub trait RemoteRepoMetadataStore: Send + Sync {
     async fn register_artifact(&self, artifact_ref: &MavenArtifactRef, blob_key: &Uuid) -> anyhow::Result<()>;
 
     async fn register_failed_download(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<()>;
+
+    async fn register_plugin(&self, group_id: MavenGroupId, plugin_metadata: MavenPluginMetadata) -> anyhow::Result<()>;
+    async fn unregister_plugin(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<()>;
+    async fn get_plugins(&self, group_id: &MavenGroupId) -> anyhow::Result<Vec<MavenPluginMetadata>>;
 }
 
 
 
 pub struct DummyRemoteRepoMetadataStore {
     local_artifacts: RwLock<HashMap<MavenArtifactRef, Uuid>>,
-    failed_downloads: RwLock<HashMap<MavenArtifactRef, Instant>>
+    failed_downloads: RwLock<HashMap<MavenArtifactRef, Instant>>,
+    plugins: RwLock<HashMap<MavenGroupId, HashMap<MavenArtifactId, MavenPluginMetadata>>>,
 }
 
 impl DummyRemoteRepoMetadataStore {
@@ -114,6 +171,7 @@ impl DummyRemoteRepoMetadataStore {
         DummyRemoteRepoMetadataStore {
             local_artifacts: Default::default(),
             failed_downloads: Default::default(),
+            plugins: Default::default(),
         }
     }
 }
@@ -150,5 +208,44 @@ impl RemoteRepoMetadataStore for DummyRemoteRepoMetadataStore {
     async fn register_failed_download(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<()> {
         self.failed_downloads.write().unwrap().insert(artifact_ref.clone(), Instant::now());
         Ok(())
+    }
+
+    //TODO return whether an existing value was overwritten
+    async fn register_plugin(&self, group_id: MavenGroupId, plugin_metadata: MavenPluginMetadata) -> anyhow::Result<()> {
+        let mut plugins = self.plugins.write().unwrap();
+        match plugins.entry(group_id) {
+            Entry::Occupied(mut e) => {
+                e.get_mut().insert(plugin_metadata.artifact_id.clone(), plugin_metadata);
+            }
+            Entry::Vacant(e) => {
+                e.insert([(plugin_metadata.artifact_id.clone(), plugin_metadata)].into());
+            }
+        };
+        Ok(())
+    }
+
+    async fn unregister_plugin(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<()> {
+        let mut plugins = self.plugins.write().unwrap();
+        match plugins.get_mut(group_id) {
+            None => {}
+            Some(g) => {
+                g.remove(artifact_id);
+            }
+        };
+        Ok(())
+    }
+
+    async fn get_plugins(&self, group_id: &MavenGroupId) -> anyhow::Result<Vec<MavenPluginMetadata>> {
+        match self.plugins.read().unwrap()
+            .get(group_id)
+        {
+            None => Ok(vec![]),
+            Some(p) => {
+                let plugins: Vec<MavenPluginMetadata> = p.values()
+                    .map(|m| m.clone())
+                    .collect();
+                Ok(plugins)
+            }
+        }
     }
 }

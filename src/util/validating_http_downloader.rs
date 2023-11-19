@@ -1,5 +1,3 @@
-use bytes::Bytes;
-use futures_core::Stream;
 use hex::FromHex;
 use hyper::{Body, Client, Request, Uri};
 use hyper::client::HttpConnector;
