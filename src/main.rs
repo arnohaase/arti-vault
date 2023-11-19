@@ -35,12 +35,8 @@ async fn main() {
 
     //TODO log level filtering
 
-    // tracing::subscriber::set_global_default(subscriber)
-    //     .expect("setting default subscriber failed");
-    //
-    //
-    // fn asdf(h: impl Handler<Arc<AppData>, Arc<AppData>>) {}
-
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("setting default subscriber failed");
 
     // build our application with a route
     let app = Router::new()
