@@ -9,9 +9,10 @@ use hyper::Uri;
 use uuid::Uuid;
 
 use crate::blob::blob_storage::BlobStorage;
-use crate::maven::coordinates::{MavenArtifactId, MavenArtifactRef, MavenGroupId};
+use crate::maven::coordinates::{MavenArtifactId, MavenArtifactRef, MavenGroupId, MavenVersion};
 use crate::maven::paths::as_maven_path;
 use crate::util::blob::Blob;
+use crate::util::change_kind::ChangeKind;
 use crate::util::validating_http_downloader::ValidatingHttpDownloader;
 
 pub struct RemoteMavenRepo<S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> {
@@ -104,11 +105,13 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
             .expect("locally stored artifacts have their md5 checksum stored"))
     }
 
-    pub async fn register_plugin(&self, group_id: MavenGroupId, plugin_metadata: MavenPluginMetadata) -> anyhow::Result<()> {
+    pub async fn register_plugin(&self, group_id: MavenGroupId, plugin_metadata: MavenPluginMetadata) -> anyhow::Result<ChangeKind> {
         self.metadata_store.register_plugin(group_id, plugin_metadata).await
     }
 
-    pub async fn unregister_plugin(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<()> {
+    /// Returns true iff the given artifact was previously registered as a plugin, and false otherwise.
+    ///  The outcome is no registered plugin for this group / artifact combination, regardless
+    pub async fn unregister_plugin(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<bool> {
         self.metadata_store.unregister_plugin(group_id, artifact_id).await
     }
 
@@ -118,11 +121,28 @@ impl <S: BlobStorage<Uuid>, M: RemoteRepoMetadataStore> RemoteMavenRepo<S, M> {
         })
     }
 
-    //TODO get_artifact_metadata()
+    pub async fn get_artifact_metadata(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<Option<MavenArtifactMetadata>> {
+        Ok(self.metadata_store.get_artifact_metadata(group_id, artifact_id).await?)
+    }
+
     //TODO get_version_metadata()
 }
 
 // https://maven.apache.org/ref/3.9.5/maven-repository-metadata/repository-metadata.html
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct MavenArtifactMetadata {
+    /// 'What the last version added to the directory is, including both releases and snapshots'
+    pub latest_version: MavenVersion,
+    /// 'What the last version added to the directory is, for the releases only'
+    pub release_version: MavenVersion,
+    /// 'Versions available of the artifact (both releases and snapshots)'
+    pub versions: Vec<MavenVersion>,
+    /// 'When the metadata was last updated. The timestamp is expressed using UTC in the format yyyyMMddHHmmss.
+    pub last_updated: String,
+}
+
+
+
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct MavenGroupMetadata {
     pub plugins: Vec<MavenPluginMetadata>,
@@ -153,9 +173,13 @@ pub trait RemoteRepoMetadataStore: Send + Sync {
 
     async fn register_failed_download(&self, artifact_ref: &MavenArtifactRef) -> anyhow::Result<()>;
 
-    async fn register_plugin(&self, group_id: MavenGroupId, plugin_metadata: MavenPluginMetadata) -> anyhow::Result<()>;
-    async fn unregister_plugin(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<()>;
+    async fn register_plugin(&self, group_id: MavenGroupId, plugin_metadata: MavenPluginMetadata) -> anyhow::Result<ChangeKind>;
+    async fn unregister_plugin(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<bool>;
     async fn get_plugins(&self, group_id: &MavenGroupId) -> anyhow::Result<Vec<MavenPluginMetadata>>;
+
+    async fn get_artifact_metadata(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<Option<MavenArtifactMetadata>>;
+
+    //TODO add / update artifact metadata
 }
 
 
@@ -164,6 +188,7 @@ pub struct DummyRemoteRepoMetadataStore {
     local_artifacts: RwLock<HashMap<MavenArtifactRef, Uuid>>,
     failed_downloads: RwLock<HashMap<MavenArtifactRef, Instant>>,
     plugins: RwLock<HashMap<MavenGroupId, HashMap<MavenArtifactId, MavenPluginMetadata>>>,
+    artifact_versions: RwLock<HashMap<MavenGroupId, HashMap<MavenArtifactId, Vec<(MavenVersion, String)>>>>,
 }
 
 impl DummyRemoteRepoMetadataStore {
@@ -172,6 +197,7 @@ impl DummyRemoteRepoMetadataStore {
             local_artifacts: Default::default(),
             failed_downloads: Default::default(),
             plugins: Default::default(),
+            artifact_versions: Default::default(),
         }
     }
 }
@@ -210,29 +236,33 @@ impl RemoteRepoMetadataStore for DummyRemoteRepoMetadataStore {
         Ok(())
     }
 
-    //TODO return whether an existing value was overwritten
-    async fn register_plugin(&self, group_id: MavenGroupId, plugin_metadata: MavenPluginMetadata) -> anyhow::Result<()> {
+    async fn register_plugin(&self, group_id: MavenGroupId, plugin_metadata: MavenPluginMetadata) -> anyhow::Result<ChangeKind> {
         let mut plugins = self.plugins.write().unwrap();
         match plugins.entry(group_id) {
             Entry::Occupied(mut e) => {
-                e.get_mut().insert(plugin_metadata.artifact_id.clone(), plugin_metadata);
+                let prev = e.get_mut().insert(plugin_metadata.artifact_id.clone(), plugin_metadata);
+                if prev.is_some() {
+                    Ok(ChangeKind::Updated)
+                }
+                else {
+                    Ok(ChangeKind::Inserted)
+                }
             }
             Entry::Vacant(e) => {
                 e.insert([(plugin_metadata.artifact_id.clone(), plugin_metadata)].into());
+                Ok(ChangeKind::Inserted)
             }
-        };
-        Ok(())
+        }
     }
 
-    async fn unregister_plugin(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<()> {
+    async fn unregister_plugin(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<bool> {
         let mut plugins = self.plugins.write().unwrap();
         match plugins.get_mut(group_id) {
-            None => {}
+            None => Ok(false),
             Some(g) => {
-                g.remove(artifact_id);
+                Ok(g.remove(artifact_id).is_some())
             }
-        };
-        Ok(())
+        }
     }
 
     async fn get_plugins(&self, group_id: &MavenGroupId) -> anyhow::Result<Vec<MavenPluginMetadata>> {
@@ -245,6 +275,45 @@ impl RemoteRepoMetadataStore for DummyRemoteRepoMetadataStore {
                     .map(|m| m.clone())
                     .collect();
                 Ok(plugins)
+            }
+        }
+    }
+
+    async fn get_artifact_metadata(&self, group_id: &MavenGroupId, artifact_id: &MavenArtifactId) -> anyhow::Result<Option<MavenArtifactMetadata>> {
+        match self.artifact_versions.read().unwrap().get(group_id) {
+            None => Ok(None),
+            Some(artifacts) => {
+                match artifacts.get(artifact_id) {
+                    None => Ok(None),
+                    Some(versions) => {
+                        if versions.is_empty() {
+                            return Ok(None);
+                        }
+
+                        let (latest_version, last_updated) = versions.iter()
+                            .max_by_key(|(_, timestamp)| timestamp)
+                            .map(|(version, timestamp)| (version.clone(), timestamp.clone()))
+                            .unwrap();
+
+                        let release_version = versions.iter()
+                            .filter(|(version, _)| matches!(version, MavenVersion::Release(_)))
+                            .max_by_key(|(_, timestamp)| timestamp)
+                            .map(|(version, _)| version.clone())
+                            .unwrap();
+
+                        let versions = versions.iter()
+                            .map(|(version, _)| version.clone())
+                            .collect();
+
+                        Ok(Some(MavenArtifactMetadata {
+                            latest_version,
+                            release_version,
+                            versions,
+                            last_updated,
+                        }))
+
+                    }
+                }
             }
         }
     }
